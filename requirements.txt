@@ -1,0 +1,10 @@
+# Versões alinhadas ao AWS Glue 5.0 (Spark 3.5.4 / Python 3.11)
+pyspark==3.5.4
+pandas==2.2.3
+numpy==2.1.3
+pyarrow==18.1.0
+psycopg[binary]==3.2.3
+boto3==1.35.90
+requests==2.32.3
+PyYAML==6.0.2
+duckdb==1.1.3

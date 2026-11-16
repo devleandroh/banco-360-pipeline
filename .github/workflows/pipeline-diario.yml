@@ -1,0 +1,70 @@
+# Execução diária do pipeline (orquestração gratuita para a demonstração do portfólio).
+# Em produção na AWS este papel seria do Amazon MWAA (Airflow gerenciado) — ver dags/banco360_dag.py.
+name: Pipeline diário
+
+on:
+  schedule:
+    - cron: "30 9 * * *"   # 06:30 em Brasília
+  workflow_dispatch:
+    inputs:
+      data:
+        description: "Data de referência (AAAA-MM-DD). Vazio = ontem"
+        required: false
+
+concurrency:
+  group: pipeline-banco360
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  executar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    services:
+      # Banco de origem do core bancário (simulado e recriado a cada execução)
+      core-db:
+        image: postgres:17-alpine
+        env: { POSTGRES_USER: core, POSTGRES_PASSWORD: core, POSTGRES_DB: core_banking }
+        ports: ["5433:5432"]
+        options: >-
+          --health-cmd "pg_isready -U core" --health-interval 3s --health-retries 20
+    env:
+      SOURCE_DB_URL: postgresql://core:core@localhost:5433/core_banking
+      WAREHOUSE_DB_URL: ${{ secrets.WAREHOUSE_DB_URL }}
+      LAKE_S3_ENDPOINT: ${{ secrets.LAKE_S3_ENDPOINT }}
+      LAKE_S3_REGION: ${{ secrets.LAKE_S3_REGION }}
+      LAKE_S3_BUCKET: ${{ secrets.LAKE_S3_BUCKET }}
+      LAKE_S3_ACCESS_KEY_ID: ${{ secrets.LAKE_S3_ACCESS_KEY_ID }}
+      LAKE_S3_SECRET_ACCESS_KEY: ${{ secrets.LAKE_S3_SECRET_ACCESS_KEY }}
+      PII_SALT: ${{ secrets.PII_SALT }}
+      RUN_ORIGIN: github-actions
+      LAKE_DIR: ${{ github.workspace }}/data/lake
+      LANDING_DIR: ${{ github.workspace }}/data/landing
+      PYTHONPATH: ${{ github.workspace }}/src
+    steps:
+      - name: Verificar secrets
+        id: secrets
+        run: |
+          if [ -z "$WAREHOUSE_DB_URL" ] || [ -z "$LAKE_S3_ACCESS_KEY_ID" ] || [ -z "$PII_SALT" ]; then
+            echo "::warning::Secrets do Supabase ainda não configurados — execução ignorada."
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/checkout@v4
+        if: steps.secrets.outputs.ok == 'true'
+      - uses: actions/setup-java@v4
+        if: steps.secrets.outputs.ok == 'true'
+        with: { distribution: temurin, java-version: "17" }
+      - uses: actions/setup-python@v5
+        if: steps.secrets.outputs.ok == 'true'
+        with: { python-version: "3.11", cache: pip }
+      - run: pip install -r requirements.txt
+        if: steps.secrets.outputs.ok == 'true'
+      - name: Executar pipeline
+        if: steps.secrets.outputs.ok == 'true'
+        run: |
+          DATA="${{ github.event.inputs.data }}"
+          python -m banco360 executar --simular ${DATA:+--data $DATA}

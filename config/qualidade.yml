@@ -1,0 +1,69 @@
+# Contratos de qualidade de dados por dataset.
+# severidade: erro  → interrompe o pipeline antes de publicar dados ruins
+#             alerta → registra e segue (aparece no painel de observabilidade)
+#
+# Tipos de regra: nao_nulo, unico, valores_aceitos, intervalo, regex, colunas_proibidas,
+#                 volume_minimo, integridade_referencial
+# Regras de reconciliação e atualidade estão em src/banco360/qualidade/regras.py.
+
+silver:
+  clientes:
+    particionado: false
+    regras:
+      - { tipo: nao_nulo, colunas: [cliente_id, cpf_hash, segmento, uf], severidade: erro }
+      - { tipo: unico, colunas: [cliente_id], severidade: erro }
+      - { tipo: unico, colunas: [cpf_hash], severidade: erro }
+      - { tipo: regex, coluna: cpf_hash, padrao: "^[0-9a-f]{64}$", severidade: erro }
+      - { tipo: colunas_proibidas, colunas: [cpf, nome, email, data_nascimento], severidade: erro, descricao: "LGPD: dados pessoais não podem chegar à Silver" }
+      - { tipo: valores_aceitos, coluna: segmento, valores: [Essencial, Prime, Private], severidade: erro }
+      - { tipo: intervalo, coluna: score_interno, min: 300, max: 950, severidade: alerta }
+
+  contas:
+    particionado: true
+    regras:
+      - { tipo: nao_nulo, colunas: [conta_id, cliente_id, chave_conta, status], severidade: erro }
+      - { tipo: unico, colunas: [conta_id], severidade: erro }
+      - { tipo: unico, colunas: [chave_conta], severidade: erro }
+      - { tipo: valores_aceitos, coluna: status, valores: [Ativa, Encerrada], severidade: erro }
+      - { tipo: integridade_referencial, coluna: cliente_id, referencia: silver.clientes.cliente_id, severidade: erro }
+
+  contratos:
+    particionado: true
+    regras:
+      - { tipo: nao_nulo, colunas: [contrato_id, cliente_id, produto, saldo_devedor, estagio], severidade: erro }
+      - { tipo: unico, colunas: [contrato_id], severidade: erro }
+      - { tipo: intervalo, coluna: dias_atraso, min: 0, severidade: erro }
+      - { tipo: intervalo, coluna: saldo_devedor, min: 0, severidade: erro }
+      - { tipo: intervalo, coluna: taxa_mensal, min: 0.001, max: 0.15, severidade: alerta }
+      - { tipo: valores_aceitos, coluna: estagio, valores: [1, 2, 3], severidade: erro }
+      - { tipo: integridade_referencial, coluna: cliente_id, referencia: silver.clientes.cliente_id, severidade: erro }
+
+  transacoes:
+    particionado: true
+    regras:
+      - { tipo: nao_nulo, colunas: [transacao_id, data_hora, conta_id, valor, canal], severidade: erro }
+      - { tipo: unico, colunas: [transacao_id], severidade: erro }
+      - { tipo: intervalo, coluna: valor, min: 0.01, severidade: erro }
+      - { tipo: valores_aceitos, coluna: sentido, valores: [Entrada, Saída], severidade: erro }
+      - { tipo: volume_minimo, min: 200, severidade: alerta, descricao: "volume diário muito abaixo do normal indica arquivo incompleto" }
+
+gold:
+  fato_transacao:
+    particionado: true
+    regras:
+      - { tipo: nao_nulo, colunas: [transacao_id, data_sk, cliente_sk, conta_sk, canal_sk], severidade: erro }
+      - { tipo: unico, colunas: [transacao_id], severidade: erro }
+      - { tipo: integridade_referencial, coluna: cliente_sk, referencia: gold.dim_cliente.cliente_sk, severidade: erro }
+
+  fato_posicao_contrato:
+    particionado: true
+    regras:
+      - { tipo: unico, colunas: [contrato_id], severidade: erro }
+      - { tipo: integridade_referencial, coluna: produto_sk, referencia: gold.dim_produto.produto_sk, severidade: erro }
+
+  mart_carteira_mensal:
+    particionado: false
+    regras:
+      - { tipo: nao_nulo, colunas: [ano_mes, segmento, produto, saldo_carteira], severidade: erro }
+      - { tipo: unico, colunas: [ano_mes, segmento, produto], severidade: erro }
+      - { tipo: intervalo, coluna: saldo_carteira, min: 0, severidade: erro }

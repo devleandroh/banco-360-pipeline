@@ -1,0 +1,59 @@
+# Ambiente local completo do Banco 360.
+#   docker compose up -d core-db warehouse-db         # bancos de origem e destino
+#   docker compose run --rm pipeline backfill --inicio 2025-10-12 --simular
+#   docker compose --profile airflow up -d            # Airflow em http://localhost:8080
+name: banco360
+
+services:
+  # Banco relacional do core bancário (sistema de ORIGEM simulado)
+  core-db:
+    image: postgres:17-alpine
+    environment: { POSTGRES_USER: core, POSTGRES_PASSWORD: core, POSTGRES_DB: core_banking }
+    ports: ["5433:5432"]
+    healthcheck: { test: ["CMD-SHELL", "pg_isready -U core"], interval: 3s, retries: 20 }
+
+  # Data Warehouse local (mesmo schema do Supabase; na AWS seria o Redshift)
+  warehouse-db:
+    image: postgres:17-alpine
+    environment: { POSTGRES_USER: postgres, POSTGRES_PASSWORD: postgres, POSTGRES_DB: postgres }
+    ports: ["5434:5432"]
+    volumes: ["./docker/warehouse-init:/docker-entrypoint-initdb.d:ro"]
+    healthcheck: { test: ["CMD-SHELL", "pg_isready -U postgres"], interval: 3s, retries: 20 }
+
+  pipeline:
+    build: { context: ., dockerfile: docker/Dockerfile }
+    image: banco360-pipeline:latest
+    env_file: [{ path: .env, required: false }]
+    environment:
+      SOURCE_DB_URL: postgresql://core:core@core-db:5432/core_banking
+      WAREHOUSE_DB_URL: ${WAREHOUSE_DB_URL:-postgresql://postgres:postgres@warehouse-db:5432/postgres}
+      RUN_ORIGIN: ${RUN_ORIGIN:-local}
+    volumes: ["banco360-data:/data", "./src:/app/src", "./config:/app/config", "./sql:/app/sql", "./tests:/app/tests", "./dags:/app/dags"]
+    depends_on:
+      core-db: { condition: service_healthy }
+      warehouse-db: { condition: service_healthy }
+
+  # Orquestração com Apache Airflow (versão suportada pelo Amazon MWAA)
+  airflow:
+    profiles: [airflow]
+    build: { context: ., dockerfile: docker/Dockerfile.airflow }
+    image: banco360-airflow:latest
+    command: standalone
+    env_file: [{ path: .env, required: false }]
+    environment:
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__CORE__DAGS_FOLDER: /opt/airflow/dags
+      SOURCE_DB_URL: postgresql://core:core@core-db:5432/core_banking
+      WAREHOUSE_DB_URL: ${WAREHOUSE_DB_URL:-postgresql://postgres:postgres@warehouse-db:5432/postgres}
+      LAKE_DIR: /data/lake
+      LANDING_DIR: /data/landing
+      RUN_ORIGIN: airflow
+    ports: ["8080:8080"]
+    volumes: ["./dags:/opt/airflow/dags", "banco360-data:/data", "./src:/opt/banco360/src", "./config:/opt/banco360/config", "./sql:/opt/banco360/sql"]
+    depends_on:
+      core-db: { condition: service_healthy }
+      warehouse-db: { condition: service_healthy }
+
+volumes:
+  # volume nomeado: no Windows/macOS é bem mais rápido que montar uma pasta do host
+  banco360-data:

@@ -78,8 +78,9 @@ def enviar(cfg: Config) -> dict[str, int]:
     pastas_regravadas = {k.rsplit("/", 1)[0] for k in locais}
     obsoletos = [k for k in remotos if k not in locais and
                  (k.rsplit("/", 1)[0] in pastas_regravadas or any(k.startswith(p) for p in removidos))]
-    for i in range(0, len(obsoletos), 1000):
-        s3.delete_objects(Bucket=cfg.s3_bucket, Delete={"Objects": [{"Key": k} for k in obsoletos[i:i + 1000]]})
+    # Remoção objeto a objeto: o Supabase Storage não aceita o DeleteObjects (remoção em lote) do S3.
+    with ThreadPoolExecutor(16) as pool:
+        list(pool.map(lambda k: s3.delete_object(Bucket=cfg.s3_bucket, Key=k), obsoletos))
     arq_rem.unlink(missing_ok=True)
     return {"enviados": len(pendentes), "removidos": len(obsoletos)}
 
